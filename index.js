@@ -161,10 +161,10 @@ function PgMutationUpsertPlugin(builder) {
 
           // Figure out to which column that unique constraint belongs to
           const uniqueKeys =
-            uniqueConstraint &&
+            (uniqueConstraint &&
             uniqueConstraint.keyAttributeNums.map(
               num => attributes.filter(attr => attr.num === num)[0]
-            );
+            )) || [];
 
           // Create upsert fields from each introspected table
           const fieldName = `upsert${tableTypeName}`
