@@ -147,12 +147,24 @@ function PgMutationUpsertPlugin(builder) {
             .filter(con => con.classId === table.id)
             .filter(con => con.type === 'p')[0]
 
+          // Figure out unique constraint
+          const uniqueConstraint = pgIntrospectionResultsByKind.constraint
+            .filter(con => con.classId === table.id)
+            .filter(con => con.type === "u")[0];
+
           // Figure out to which column that pkey constraint belongs to
           const primaryKeys =
             primaryKeyConstraint &&
             primaryKeyConstraint.keyAttributeNums.map(
               num => attributes.filter(attr => attr.num === num)[0],
             )
+
+          // Figure out to which column that unique constraint belongs to
+          const uniqueKeys =
+            uniqueConstraint &&
+            uniqueConstraint.keyAttributeNums.map(
+              num => attributes.filter(attr => attr.num === num)[0]
+            );
 
           // Create upsert fields from each introspected table
           const fieldName = `upsert${tableTypeName}`
@@ -206,7 +218,11 @@ function PgMutationUpsertPlugin(builder) {
                       const _primaryKeys = primaryKeys.map(
                         key => sql.identifier(key.name).names[0],
                       )
+                      const _uniqueKeys = uniqueKeys.map(
+                        key => sql.identifier(key.name).names[0],
+                      )
                       const isPrimary = i => _primaryKeys.includes(i.names[0])
+                      const isUnique = i => _uniqueKeys.includes(i.names[0])
 
                       const join = fields => sql.join(fields, ', ')
 
@@ -227,21 +243,47 @@ function PgMutationUpsertPlugin(builder) {
                         table.name,
                       )
 
-                      const sqlPrimaryKeys = primaryKeys.map(key =>
-                        sql.identifier(key.name),
-                      )
+                      const columnsUsed = sqlColumns.reduce((acc, val) => {
+                        acc[val.names[0]] = true;
+                        return acc;
+                      }, {});
+
+                      const sqlPrimaryKeys = primaryKeys
+                        .filter(key => columnsUsed[key.name])
+                        .map(key =>
+                          sql.identifier(key.name),
+                        );
+
+                      const sqlUniqueKeys = uniqueKeys
+                        .filter(key => columnsUsed[key.name])
+                        .map(key =>
+                          sql.identifier(key.name),
+                        );
+
+                      const onConflictKeys = sqlPrimaryKeys.concat(sqlUniqueKeys);
 
                       // SQL query for upsert mutations
-                      const mutationQuery = sql.query`
+                      let mutationQuery = sql.query`
                         INSERT INTO ${sqlTableName} ${
                         sqlColumns.length
                           ? sql.fragment`(
                             ${join(sqlColumns)}
-                          ) VALUES (${join(sqlValues)})
-                          ON CONFLICT (${join(sqlPrimaryKeys)}) DO UPDATE
-                          SET ${join(conflictUpdateArray)}`
+                          ) VALUES (${join(sqlValues)})`
                           : sql.fragment`DEFAULT VALUES`
                       } RETURNING *`
+
+                      if (onConflictKeys.length) {
+                        mutationQuery = sql.query`
+                          INSERT INTO ${sqlTableName} ${
+                          sqlColumns.length
+                            ? sql.fragment`(
+                              ${join(sqlColumns)}
+                            ) VALUES (${join(sqlValues)})
+                            ON CONFLICT (${join(onConflictKeys)}) DO UPDATE
+                            SET ${join(conflictUpdateArray)}`
+                            : sql.fragment`DEFAULT VALUES`
+                        } RETURNING *`
+                      }
 
                       let row
                       try {
